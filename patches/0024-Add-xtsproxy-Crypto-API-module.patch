@@ -1,4 +1,4 @@
-From ac745f1fd1d955ee6dd5c467e03ba1cc6c6006a5 Mon Sep 17 00:00:00 2001
+From 354d7a8febaa440dd3244466670315ed2805764e Mon Sep 17 00:00:00 2001
 From: Ignat Korchagin <ignat@cloudflare.com>
 Date: Wed, 4 Dec 2019 16:53:46 +0000
 Subject: [PATCH] Add xtsproxy Crypto API module
@@ -7,17 +7,17 @@ This module implements a Crypto API AES-XTS synchronous driver, which uses
 AES NI implementation as a backend and falls back to generic AES implementation,
 when FPU is not usable.
 ---
- crypto/Kconfig    |  10 +++++
+ crypto/Kconfig    |  10 ++++
  crypto/Makefile   |   1 +
- crypto/xtsproxy.c | 131 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ crypto/xtsproxy.c | 131 ++++++++++++++++++++++++++++++++++++++++++++++
  3 files changed, 142 insertions(+)
  create mode 100644 crypto/xtsproxy.c
 
 diff --git a/crypto/Kconfig b/crypto/Kconfig
-index 9e524044d312..a401338a033e 100644
+index 094ef56ab7b4..9964667cef85 100644
 --- a/crypto/Kconfig
 +++ b/crypto/Kconfig
-@@ -434,6 +434,16 @@ config CRYPTO_XTS
+@@ -457,6 +457,16 @@ config CRYPTO_XTS
  	  key size 256, 384 or 512 bits. This implementation currently
  	  can't handle a sectorsize which is not a multiple of 16 bytes.
  
@@ -33,12 +33,12 @@ index 9e524044d312..a401338a033e 100644
 +
  config CRYPTO_KEYWRAP
  	tristate "Key wrapping support"
- 	select CRYPTO_BLKCIPHER
+ 	select CRYPTO_SKCIPHER
 diff --git a/crypto/Makefile b/crypto/Makefile
-index fcb1ee679782..197ae4caf90c 100644
+index b279483fba50..4f6ddcbdc6d4 100644
 --- a/crypto/Makefile
 +++ b/crypto/Makefile
-@@ -82,6 +82,7 @@ obj-$(CONFIG_CRYPTO_PCBC) += pcbc.o
+@@ -90,6 +90,7 @@ obj-$(CONFIG_CRYPTO_PCBC) += pcbc.o
  obj-$(CONFIG_CRYPTO_CTS) += cts.o
  obj-$(CONFIG_CRYPTO_LRW) += lrw.o
  obj-$(CONFIG_CRYPTO_XTS) += xts.o
@@ -184,5 +184,5 @@ index 000000000000..51ecfb7b4891
 +MODULE_LICENSE("GPL");
 +MODULE_ALIAS_CRYPTO("xts(aes)");
 -- 
-2.11.0
+2.29.1
 
