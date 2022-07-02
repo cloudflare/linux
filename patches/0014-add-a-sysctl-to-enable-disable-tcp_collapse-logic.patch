@@ -5,7 +5,7 @@ Subject: [PATCH] Add a sysctl to skip tcp collapse processing when the receive
  buffer is full.
 
 For context and additional information about this patch, see the
-blog post at
+blog post at https://blog.cloudflare.com/optimizing-tcp-for-high-throughput-and-low-latency/
 
 sysctl:  net.ipv4.tcp_collapse_max_bytes
 
