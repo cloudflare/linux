@@ -1,0 +1,258 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ivan Babrou <ivan@cloudflare.com>
+Date: Mon, 22 May 2023 17:04:03 -0700
+Subject: [PATCH] audit: check syscall bitmap on entry to avoid extra work
+
+Currently audit subsystem arms itself as long as there are rules present,
+which means that on every syscall exit all rules are evaluated, even
+if they don't match the syscall to begin with. For setups where
+there are no rules that can match any syscall, this means that
+the CPU price needs to be paid when it's not necessary.
+
+This patch introduces a bitmap for syscalls that is maintained
+when rules are inserted and removed. For every syscall we maintain
+a bit indicating whether it needs to be audited at all, which is then
+checked at syscall entry. If the are no rules matching a syscall,
+extra cost of checking all the rules is avoided.
+
+Consider the following set of 10 audit rules as a benchmark:
+
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/0 -F key=BENCH0
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/1 -F key=BENCH1
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/2 -F key=BENCH2
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/3 -F key=BENCH3
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/4 -F key=BENCH4
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/5 -F key=BENCH5
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/6 -F key=BENCH6
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/7 -F key=BENCH7
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/8 -F key=BENCH8
+    -a always,exit -F arch=b64 -S unlinkat,linkat,renameat,openat,renameat2 -F perm=wa -F dir=/tmp/audit-bench/9 -F key=BENCH9
+
+We can use the following benchmark to run unrelated syscalls:
+
+    #include <sys/stat.h>
+    #include <unistd.h>
+    #include <stdio.h>
+
+    #define GETPID_COUNT 100 * 1000
+    #define STAT_COUNT 100 * 1000
+
+    pid_t bench_getpid()
+    {
+        pid_t pid;
+
+        for (int i = 0; i < GETPID_COUNT; i++)
+        {
+            pid = getpid();
+        }
+
+        return pid;
+    }
+
+    struct stat bench_stat()
+    {
+        struct stat statbuf;
+
+        for (int i = 0; i < STAT_COUNT; i++)
+        {
+            stat("/etc/passwd", &statbuf);
+        }
+
+        return statbuf;
+    }
+
+    int main()
+    {
+        pid_t pid = bench_getpid();
+        struct stat statbuf = bench_stat();
+
+        printf("pid = %d, size = %d\n", pid, statbuf.st_size);
+    }
+
+Here we run 100k `getpid()` calls and 100k `stat()` calls, which are not
+covered by any of the audit rules installed on the system.
+
+When running without any rules present, but with auditd running, flamegraphs
+show ~5% of CPU time spent in audit_* code. If we install the rules mentioned
+above, this number jumps to ~24%. With this patch applied, the number is once
+again down to 5%, which is what one would expect.
+
+There's extra cost of maintaining the bitmap when rules are changed,
+but it's negligible compared to CPU savings from cheaper syscalls.
+
+Signed-off-by: Ivan Babrou <ivan@cloudflare.com>
+---
+ include/linux/audit.h | 21 +++++++++++++++++++++
+ kernel/auditfilter.c  | 32 ++++++++++++++++++++++++++++----
+ kernel/auditsc.c      | 27 +++++++++++----------------
+ 3 files changed, 60 insertions(+), 20 deletions(-)
+
+diff --git a/include/linux/audit.h b/include/linux/audit.h
+index 31086a72e32a..e99428052321 100644
+--- a/include/linux/audit.h
++++ b/include/linux/audit.h
+@@ -9,6 +9,7 @@
+ #ifndef _LINUX_AUDIT_H_
+ #define _LINUX_AUDIT_H_
+ 
++#include <linux/bitmap.h>
+ #include <linux/sched.h>
+ #include <linux/ptrace.h>
+ #include <linux/audit_arch.h>
+@@ -399,6 +400,22 @@ static inline void audit_ptrace(struct task_struct *t)
+ 		__audit_ptrace(t);
+ }
+ 
++static inline int audit_in_mask(const struct audit_krule *rule, unsigned long val)
++{
++	int word, bit;
++
++	if (val > 0xffffffff)
++		return false;
++
++	word = AUDIT_WORD(val);
++	if (word >= AUDIT_BITMASK_SIZE)
++		return false;
++
++	bit = AUDIT_BIT(val);
++
++	return rule->mask[word] & bit;
++}
++
+ 				/* Private API (for audit.c only) */
+ extern void __audit_ipc_obj(struct kern_ipc_perm *ipcp);
+ extern void __audit_ipc_set_perm(unsigned long qbytes, uid_t uid, gid_t gid, umode_t mode);
+@@ -573,6 +590,10 @@ static inline void audit_log_nfcfg(const char *name, u8 af,
+ 
+ extern int audit_n_rules;
+ extern int audit_signals;
++
++extern int audit_n_syscall_rules;
++extern int audit_syscall_rules[NR_syscalls];
++extern DECLARE_BITMAP(audit_syscalls_bitmap, NR_syscalls);
+ #else /* CONFIG_AUDITSYSCALL */
+ static inline int audit_alloc(struct task_struct *task)
+ {
+diff --git a/kernel/auditfilter.c b/kernel/auditfilter.c
+index 42d99896e7a6..3c7ea1a3faf1 100644
+--- a/kernel/auditfilter.c
++++ b/kernel/auditfilter.c
+@@ -943,7 +943,7 @@ static inline int audit_add_rule(struct audit_entry *entry)
+ 	struct list_head *list;
+ 	int err = 0;
+ #ifdef CONFIG_AUDITSYSCALL
+-	int dont_count = 0;
++	int syscall_nr, dont_count = 0;
+ 
+ 	/* If any of these, don't count towards total */
+ 	switch(entry->rule.listnr) {
+@@ -1007,9 +1007,21 @@ static inline int audit_add_rule(struct audit_entry *entry)
+ 		list_add_tail_rcu(&entry->list, list);
+ 	}
+ #ifdef CONFIG_AUDITSYSCALL
+-	if (!dont_count)
++	if (!dont_count) {
+ 		audit_n_rules++;
+ 
++		if (entry->rule.listnr == AUDIT_FILTER_EXIT) {
++			audit_n_syscall_rules++;
++
++			for (syscall_nr = 0; syscall_nr < NR_syscalls; syscall_nr++) {
++				if (!audit_in_mask(&entry->rule, syscall_nr))
++					continue;
++				if (++audit_syscall_rules[syscall_nr] == 1)
++					set_bit(syscall_nr, audit_syscalls_bitmap);
++			}
++		}
++	}
++
+ 	if (!audit_match_signal(entry))
+ 		audit_signals++;
+ #endif
+@@ -1026,7 +1038,7 @@ int audit_del_rule(struct audit_entry *entry)
+ 	struct list_head *list;
+ 	int ret = 0;
+ #ifdef CONFIG_AUDITSYSCALL
+-	int dont_count = 0;
++	int syscall_nr, dont_count = 0;
+ 
+ 	/* If any of these, don't count towards total */
+ 	switch(entry->rule.listnr) {
+@@ -1054,9 +1066,21 @@ int audit_del_rule(struct audit_entry *entry)
+ 		audit_remove_mark_rule(&e->rule);
+ 
+ #ifdef CONFIG_AUDITSYSCALL
+-	if (!dont_count)
++	if (!dont_count) {
+ 		audit_n_rules--;
+ 
++		if (entry->rule.listnr == AUDIT_FILTER_EXIT) {
++			audit_n_syscall_rules--;
++
++			for (syscall_nr = 0; syscall_nr < NR_syscalls; syscall_nr++) {
++				if (!audit_in_mask(&entry->rule, syscall_nr))
++					continue;
++				if (--audit_syscall_rules[syscall_nr] == 0)
++					clear_bit(syscall_nr, audit_syscalls_bitmap);
++			}
++		}
++	}
++
+ 	if (!audit_match_signal(entry))
+ 		audit_signals--;
+ #endif
+diff --git a/kernel/auditsc.c b/kernel/auditsc.c
+index addeed3df15d..eb8296474bb2 100644
+--- a/kernel/auditsc.c
++++ b/kernel/auditsc.c
+@@ -86,6 +86,15 @@ int audit_n_rules;
+ /* determines whether we collect data for signals sent */
+ int audit_signals;
+ 
++/* number of syscall related audit rules */
++int audit_n_syscall_rules;
++
++/* number of rules per syscall */
++int audit_syscall_rules[NR_syscalls];
++
++/* bitmap for checking whether a syscall is audited */
++DECLARE_BITMAP(audit_syscalls_bitmap, NR_syscalls);
++
+ struct audit_aux_data {
+ 	struct audit_aux_data	*next;
+ 	int			type;
+@@ -790,22 +799,6 @@ static enum audit_state audit_filter_task(struct task_struct *tsk, char **key)
+ 	return AUDIT_STATE_BUILD;
+ }
+ 
+-static int audit_in_mask(const struct audit_krule *rule, unsigned long val)
+-{
+-	int word, bit;
+-
+-	if (val > 0xffffffff)
+-		return false;
+-
+-	word = AUDIT_WORD(val);
+-	if (word >= AUDIT_BITMASK_SIZE)
+-		return false;
+-
+-	bit = AUDIT_BIT(val);
+-
+-	return rule->mask[word] & bit;
+-}
+-
+ /**
+  * __audit_filter_op - common filter helper for operations (syscall/uring/etc)
+  * @tsk: associated task
+@@ -2025,6 +2018,8 @@ void __audit_syscall_entry(int major, unsigned long a1, unsigned long a2,
+ 		return;
+ 
+ 	context->dummy = !audit_n_rules;
++	if (!context->dummy && audit_n_syscall_rules == audit_n_rules)
++		context->dummy = !test_bit(major, audit_syscalls_bitmap);
+ 	if (!context->dummy && state == AUDIT_STATE_BUILD) {
+ 		context->prio = 0;
+ 		if (auditd_test_task(current))
+-- 
+2.40.1
+
