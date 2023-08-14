@@ -81,11 +81,14 @@ There's extra cost of maintaining the bitmap when rules are changed,
 but it's negligible compared to CPU savings from cheaper syscalls.
 
 Signed-off-by: Ivan Babrou <ivan@cloudflare.com>
+
+---
+v2: Skipping AUDIT_NEVER in bitmap.
 ---
  include/linux/audit.h | 21 +++++++++++++++++++++
- kernel/auditfilter.c  | 32 ++++++++++++++++++++++++++++----
+ kernel/auditfilter.c  | 36 ++++++++++++++++++++++++++++++++----
  kernel/auditsc.c      | 27 +++++++++++----------------
- 3 files changed, 60 insertions(+), 20 deletions(-)
+ 3 files changed, 64 insertions(+), 20 deletions(-)
 
 diff --git a/include/linux/audit.h b/include/linux/audit.h
 index 31086a72e32a..e99428052321 100644
@@ -134,7 +137,7 @@ index 31086a72e32a..e99428052321 100644
  static inline int audit_alloc(struct task_struct *task)
  {
 diff --git a/kernel/auditfilter.c b/kernel/auditfilter.c
-index 42d99896e7a6..3c7ea1a3faf1 100644
+index 42d99896e7a6..e6ca85e96622 100644
 --- a/kernel/auditfilter.c
 +++ b/kernel/auditfilter.c
 @@ -943,7 +943,7 @@ static inline int audit_add_rule(struct audit_entry *entry)
@@ -146,7 +149,7 @@ index 42d99896e7a6..3c7ea1a3faf1 100644
  
  	/* If any of these, don't count towards total */
  	switch(entry->rule.listnr) {
-@@ -1007,9 +1007,21 @@ static inline int audit_add_rule(struct audit_entry *entry)
+@@ -1007,9 +1007,23 @@ static inline int audit_add_rule(struct audit_entry *entry)
  		list_add_tail_rcu(&entry->list, list);
  	}
  #ifdef CONFIG_AUDITSYSCALL
@@ -157,11 +160,13 @@ index 42d99896e7a6..3c7ea1a3faf1 100644
 +		if (entry->rule.listnr == AUDIT_FILTER_EXIT) {
 +			audit_n_syscall_rules++;
 +
-+			for (syscall_nr = 0; syscall_nr < NR_syscalls; syscall_nr++) {
-+				if (!audit_in_mask(&entry->rule, syscall_nr))
-+					continue;
-+				if (++audit_syscall_rules[syscall_nr] == 1)
-+					set_bit(syscall_nr, audit_syscalls_bitmap);
++			if (entry->rule.action != AUDIT_NEVER) {
++				for (syscall_nr = 0; syscall_nr < NR_syscalls; syscall_nr++) {
++					if (!audit_in_mask(&entry->rule, syscall_nr))
++						continue;
++					if (++audit_syscall_rules[syscall_nr] == 1)
++						set_bit(syscall_nr, audit_syscalls_bitmap);
++				}
 +			}
 +		}
 +	}
@@ -169,7 +174,7 @@ index 42d99896e7a6..3c7ea1a3faf1 100644
  	if (!audit_match_signal(entry))
  		audit_signals++;
  #endif
-@@ -1026,7 +1038,7 @@ int audit_del_rule(struct audit_entry *entry)
+@@ -1026,7 +1040,7 @@ int audit_del_rule(struct audit_entry *entry)
  	struct list_head *list;
  	int ret = 0;
  #ifdef CONFIG_AUDITSYSCALL
@@ -178,7 +183,7 @@ index 42d99896e7a6..3c7ea1a3faf1 100644
  
  	/* If any of these, don't count towards total */
  	switch(entry->rule.listnr) {
-@@ -1054,9 +1066,21 @@ int audit_del_rule(struct audit_entry *entry)
+@@ -1054,9 +1068,23 @@ int audit_del_rule(struct audit_entry *entry)
  		audit_remove_mark_rule(&e->rule);
  
  #ifdef CONFIG_AUDITSYSCALL
@@ -189,11 +194,13 @@ index 42d99896e7a6..3c7ea1a3faf1 100644
 +		if (entry->rule.listnr == AUDIT_FILTER_EXIT) {
 +			audit_n_syscall_rules--;
 +
-+			for (syscall_nr = 0; syscall_nr < NR_syscalls; syscall_nr++) {
-+				if (!audit_in_mask(&entry->rule, syscall_nr))
-+					continue;
-+				if (--audit_syscall_rules[syscall_nr] == 0)
-+					clear_bit(syscall_nr, audit_syscalls_bitmap);
++			if (entry->rule.action != AUDIT_NEVER) {
++				for (syscall_nr = 0; syscall_nr < NR_syscalls; syscall_nr++) {
++					if (!audit_in_mask(&entry->rule, syscall_nr))
++						continue;
++					if (--audit_syscall_rules[syscall_nr] == 0)
++						clear_bit(syscall_nr, audit_syscalls_bitmap);
++				}
 +			}
 +		}
 +	}
@@ -254,5 +261,5 @@ index addeed3df15d..eb8296474bb2 100644
  		context->prio = 0;
  		if (auditd_test_task(current))
 -- 
-2.40.1
+2.41.0
 
