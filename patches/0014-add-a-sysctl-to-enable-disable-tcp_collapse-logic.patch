@@ -41,14 +41,16 @@ diff --git a/include/net/netns/ipv4.h b/include/net/netns/ipv4.h
 index 6c5b2efc4f17..bf2c9b5847e4 100644
 --- a/include/net/netns/ipv4.h
 +++ b/include/net/netns/ipv4.h
-@@ -182,6 +182,7 @@ struct netns_ipv4 {
- 	int sysctl_udp_rmem_min;
+@@ -188,6 +188,8 @@ struct netns_ipv4 {
+        int sysctl_udp_wmem_min;
+        int sysctl_udp_rmem_min;
  
- 	u8 sysctl_fib_notify_on_flag_change;
-+	unsigned int sysctl_tcp_collapse_max_bytes;
- 
++       unsigned int sysctl_tcp_collapse_max_bytes;
++
  #ifdef CONFIG_NET_L3_MASTER_DEV
- 	u8 sysctl_udp_l3mdev_accept;
+        int sysctl_udp_l3mdev_accept;
+ #endif
+
 diff --git a/include/trace/events/tcp.h b/include/trace/events/tcp.h
 index 521059d8dc0a..35fa0f23680c 100644
 --- a/include/trace/events/tcp.h
