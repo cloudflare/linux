@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Frederick Lawler <fred@cloudflare.com>
+Date: Thu, 2 May 2024 14:21:20 -0500
+Subject: [PATCH] ima: Replace IMA_APPRAISE_ENFORCE checks with
+ is_ima_appraise_enabled()
+
+We have the is_ima_appraise_enabled() function to make (ima_appraise &
+IMA_APPRAISE_ENFORCE) == IMA_APPRAISE_ENFORCE checks. Lets use the
+function instead as an abstraction to later expand this functions purpose.
+
+Signed-off-by: Frederick Lawler <fred@cloudflare.com>
+---
+ security/integrity/ima/ima_main.c   | 9 ++++-----
+ security/integrity/ima/ima_policy.c | 2 +-
+ 2 files changed, 5 insertions(+), 6 deletions(-)
+
+diff --git a/security/integrity/ima/ima_main.c b/security/integrity/ima/ima_main.c
+index 06132cf47016..6ad0cdc3afe0 100644
+--- a/security/integrity/ima/ima_main.c
++++ b/security/integrity/ima/ima_main.c
+@@ -419,7 +419,7 @@ static int process_measurement(struct file *file, const struct cred *cred,
+ 	if (pathbuf)
+ 		__putname(pathbuf);
+ 	if (must_appraise) {
+-		if (rc && (ima_appraise & IMA_APPRAISE_ENFORCE))
++		if (rc && is_ima_appraise_enabled())
+ 			return -EACCES;
+ 		if (file->f_mode & FMODE_WRITE)
+ 			set_bit(IMA_UPDATE_XATTR, &iint->atomic_flags);
+@@ -825,7 +825,7 @@ static int ima_post_read_file(struct file *file, char *buf, loff_t size,
+ 		return 0;
+ 
+ 	if (!file || !buf || size == 0) { /* should never happen */
+-		if (ima_appraise & IMA_APPRAISE_ENFORCE)
++		if (is_ima_appraise_enabled())
+ 			return -EACCES;
+ 		return 0;
+ 	}
+@@ -852,8 +852,7 @@ static int ima_load_data(enum kernel_load_data_id id, bool contents)
+ {
+ 	bool ima_enforce, sig_enforce;
+ 
+-	ima_enforce =
+-		(ima_appraise & IMA_APPRAISE_ENFORCE) == IMA_APPRAISE_ENFORCE;
++	ima_enforce = is_ima_appraise_enabled();
+ 
+ 	switch (id) {
+ 	case LOADING_KEXEC_IMAGE:
+@@ -908,7 +907,7 @@ static int ima_post_load_data(char *buf, loff_t size,
+ {
+ 	if (load_id == LOADING_FIRMWARE) {
+ 		if ((ima_appraise & IMA_APPRAISE_FIRMWARE) &&
+-		    (ima_appraise & IMA_APPRAISE_ENFORCE)) {
++		    is_ima_appraise_enabled()) {
+ 			pr_err("Prevent firmware loading_store.\n");
+ 			return -EACCES; /* INTEGRITY_UNKNOWN */
+ 		}
+diff --git a/security/integrity/ima/ima_policy.c b/security/integrity/ima/ima_policy.c
+index 09da8e639239..c013cf22a399 100644
+--- a/security/integrity/ima/ima_policy.c
++++ b/security/integrity/ima/ima_policy.c
+@@ -2294,7 +2294,7 @@ bool ima_appraise_signature(enum kernel_read_file_id id)
+ 	if (id >= READING_MAX_ID)
+ 		return false;
+ 
+-	if (id == READING_KEXEC_IMAGE && !(ima_appraise & IMA_APPRAISE_ENFORCE)
++	if (id == READING_KEXEC_IMAGE && !is_ima_appraise_enabled()
+ 	    && security_locked_down(LOCKDOWN_KEXEC))
+ 		return false;
+ 
+-- 
+2.34.1
+

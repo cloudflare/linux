@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Frederick Lawler <fred@cloudflare.com>
+Date: Thu, 2 May 2024 15:46:25 -0500
+Subject: [PATCH] ima: Introduce SELECTIVE_ENFORCEMENT appraise mode
+
+While exploring IMA for protecting our files, we came to the conclusion
+that it would be nice for users to put their system into an enforcement
+mode that allows them to audit and protect what they can at the same
+time as they continue to sign files at a slower pace. This avoids the
+problem of users needing to prep their entire operating systems before
+enabling enforce mode.
+
+IMA does not currently offer a way for users to have this mode. This adds that
+functionality.
+
+To enable, set the boot parameter:
+
+	ima_appraise=selective-enforce
+
+The mmap_violation_check was left in tact in order to easily capture
+programs that are failing this check. We can use that information to
+correct those programs for enforcement mode.
+
+Signed-off-by: Frederick Lawler <fred@cloudflare.com>
+---
+ Documentation/admin-guide/kernel-parameters.txt |  2 +-
+ security/integrity/ima/ima.h                    |  1 +
+ security/integrity/ima/ima_appraise.c           | 13 ++++++++++++-
+ security/integrity/ima/ima_main.c               | 13 ++++++++++++-
+ 4 files changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
+index 1518343bbe22..09a10ba606f6 100644
+--- a/Documentation/admin-guide/kernel-parameters.txt
++++ b/Documentation/admin-guide/kernel-parameters.txt
+@@ -2072,7 +2072,7 @@
+ 			Set number of hash buckets for inode cache.
+ 
+ 	ima_appraise=	[IMA] appraise integrity measurements
+-			Format: { "off" | "enforce" | "fix" | "log" }
++			Format: { "off" | "enforce" | "selective-enforce" | "fix" | "log" }
+ 			default: "enforce"
+ 
+ 	ima_appraise_tcb [IMA] Deprecated.  Use ima_policy= instead.
+diff --git a/security/integrity/ima/ima.h b/security/integrity/ima/ima.h
+index 3c323ca213d4..3d5efaf9cb62 100644
+--- a/security/integrity/ima/ima.h
++++ b/security/integrity/ima/ima.h
+@@ -423,6 +423,7 @@ int ima_policy_show(struct seq_file *m, void *v);
+ #define IMA_APPRAISE_FIRMWARE	0x10
+ #define IMA_APPRAISE_POLICY	0x20
+ #define IMA_APPRAISE_KEXEC	0x40
++#define IMA_APPRAISE_SELECTIVE_ENFORCE 0x80
+ 
+ #ifdef CONFIG_IMA_APPRAISE
+ int ima_check_blacklist(struct ima_iint_cache *iint,
+diff --git a/security/integrity/ima/ima_appraise.c b/security/integrity/ima/ima_appraise.c
+index 656c709b974f..cb1233a9e519 100644
+--- a/security/integrity/ima/ima_appraise.c
++++ b/security/integrity/ima/ima_appraise.c
+@@ -40,6 +40,8 @@ void __init ima_appraise_parse_cmdline(void)
+ 		appraisal_state = IMA_APPRAISE_FIX;
+ 	else if (strncmp(str, "enforce", 7) == 0)
+ 		appraisal_state = IMA_APPRAISE_ENFORCE;
++	else if (strncmp(str, "selective-enforce", 17) == 0)
++		appraisal_state = IMA_APPRAISE_SELECTIVE_ENFORCE;
+ 	else
+ 		pr_err("invalid \"%s\" appraise option", str);
+ 
+@@ -62,7 +64,8 @@ void __init ima_appraise_parse_cmdline(void)
+  */
+ bool is_ima_appraise_enabled(void)
+ {
+-	return ima_appraise & IMA_APPRAISE_ENFORCE;
++	return (ima_appraise & IMA_APPRAISE_ENFORCE) || 
++		   (ima_appraise & IMA_APPRAISE_SELECTIVE_ENFORCE);
+ }
+ 
+ /*
+@@ -589,6 +592,14 @@ int ima_appraise_measurement(enum ima_hooks func, struct ima_iint_cache *iint,
+ 			status = INTEGRITY_PASS;
+ 		}
+ 
++		/*
++		 * Permit missing signatures/hashes
++		 */
++		if ((ima_appraise & IMA_APPRAISE_SELECTIVE_ENFORCE) && (
++			status == INTEGRITY_NOLABEL || 
++			status == INTEGRITY_UNKNOWN))
++			status = INTEGRITY_PASS;
++
+ 		integrity_audit_msg(AUDIT_INTEGRITY_DATA, inode, filename,
+ 				    op, cause, rc, 0);
+ 	} else {
+diff --git a/security/integrity/ima/ima_main.c b/security/integrity/ima/ima_main.c
+index 6ad0cdc3afe0..f775876585a0 100644
+--- a/security/integrity/ima/ima_main.c
++++ b/security/integrity/ima/ima_main.c
+@@ -101,6 +101,7 @@ static int mmap_violation_check(enum ima_hooks func, struct file *file,
+ 		integrity_audit_msg(AUDIT_INTEGRITY_DATA, inode, *pathname,
+ 				    "mmap_file", "mmapped_writers", rc, 0);
+ 	}
++
+ 	return rc;
+ }
+ 
+@@ -341,6 +342,11 @@ static int process_measurement(struct file *file, const struct cred *cred,
+ 		if (must_appraise) {
+ 			rc = mmap_violation_check(func, file, &pathbuf,
+ 						  &pathname, filename);
++
++			if (rc && (ima_appraise & IMA_APPRAISE_SELECTIVE_ENFORCE)) {
++				rc = 0;
++			}
++
+ 			if (!rc)
+ 				rc = ima_get_cache_status(iint, func);
+ 		}
+@@ -389,9 +395,14 @@ static int process_measurement(struct file *file, const struct cred *cred,
+ 						      xattr_len, modsig);
+ 			inode_unlock(inode);
+ 		}
+-		if (!rc)
++		if (!rc) {
+ 			rc = mmap_violation_check(func, file, &pathbuf,
+ 						  &pathname, filename);
++			if (rc && (ima_appraise & IMA_APPRAISE_SELECTIVE_ENFORCE)) {
++				rc = 0;
++			}
++		}
++
+ 	}
+ 	if (action & IMA_AUDIT)
+ 		ima_audit_measurement(iint, pathname);
+-- 
+2.34.1
+
